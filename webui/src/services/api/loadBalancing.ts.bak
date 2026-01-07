@@ -1,0 +1,101 @@
+/**
+ * Load Balancing API services
+ * Provides credential weights, health status, and circuit breaker status APIs
+ */
+import { apiClient } from './client';
+
+export interface CredentialWeight {
+  auth_id: string;
+  provider: string;
+  weight: number;
+  display_name: string;
+  disabled: boolean;
+}
+
+export interface CredentialWeightUpdate {
+  auth_id: string;
+  weight: number;
+}
+
+export interface PutCredentialWeightsRequest {
+  weights: CredentialWeightUpdate[];
+}
+
+export interface HealthStatus {
+  auth_id: string;
+  provider: string;
+  display_name: string;
+  healthy: boolean;
+  last_check: string | null;
+  last_error: string | null;
+  consecutive_failures: number;
+}
+
+export interface CircuitBreakerStatus {
+  auth_id: string;
+  provider: string;
+  display_name: string;
+  state: 'closed' | 'open' | 'half-open';
+  failure_count: number;
+  success_count: number;
+  last_failure: string | null;
+  next_retry: string | null;
+}
+
+export interface LoadBalancingConfig {
+  strategy: string;
+  health_check_enabled: boolean;
+  health_check_interval: string;
+  circuit_breaker_enabled: boolean;
+  failure_threshold: number;
+  success_threshold: number;
+  open_timeout: string;
+}
+
+export const loadBalancingApi = {
+  /**
+   * Get all credential weights
+   */
+  async getCredentialWeights(): Promise<CredentialWeight[]> {
+    const response = await apiClient.get<{ weights: CredentialWeight[] }>('/credential-weights');
+    return response?.weights || [];
+  },
+
+  /**
+   * Update credential weights (batch)
+   */
+  async updateCredentialWeights(weights: CredentialWeightUpdate[]): Promise<void> {
+    await apiClient.put('/credential-weights', { weights });
+  },
+
+  /**
+   * Get health status for all credentials
+   */
+  async getHealthStatus(): Promise<HealthStatus[]> {
+    const response = await apiClient.get<HealthStatus[]>('/health-status');
+    return response || [];
+  },
+
+  /**
+   * Get circuit breaker status for all credentials
+   */
+  async getCircuitBreakerStatus(): Promise<CircuitBreakerStatus[]> {
+    const response = await apiClient.get<CircuitBreakerStatus[]>('/circuit-breakers');
+    return response || [];
+  },
+
+  /**
+   * Reset a specific circuit breaker
+   */
+  async resetCircuitBreaker(authId: string): Promise<void> {
+    await apiClient.post(`/circuit-breakers/${encodeURIComponent(authId)}/reset`);
+  },
+
+  /**
+   * Get load balancing configuration
+   */
+  async getConfig(): Promise<LoadBalancingConfig> {
+    const response = await apiClient.get<LoadBalancingConfig>('/load-balancing/config');
+    return response;
+  },
+};

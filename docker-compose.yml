@@ -1,7 +1,7 @@
 services:
   cli-proxy-api:
-    image: ${CLI_PROXY_IMAGE:-eceasy/cli-proxy-api:latest}
-    pull_policy: always
+    image: ${CLI_PROXY_IMAGE:-cli-proxy-api-local:latest}
+    pull_policy: build  # 强制使用本地构建
     build:
       context: .
       dockerfile: Dockerfile
@@ -10,12 +10,19 @@ services:
         COMMIT: ${COMMIT:-none}
         BUILD_DATE: ${BUILD_DATE:-unknown}
     container_name: cli-proxy-api
+    labels:
+      - "com.docker.compose.project=cliproxyapi"
+      - "org.opencontainers.image.title=CLI Proxy API"
+      - "org.opencontainers.image.description=OpenAI/Gemini/Claude compatible API proxy"
+      - "traefik.enable=false"
+      # 自定义 Web UI 路径标签（Docker Desktop 支持）
+      - "com.centurylinklabs.watchtower.enable=true"
     # env_file:
     #   - .env
     environment:
       DEPLOY: ${DEPLOY:-}
     ports:
-      - "8317:8317"
+      - "8317:8318"  # 外部8317映射到容器内8318
       - "8085:8085"
       - "1455:1455"
       - "54545:54545"

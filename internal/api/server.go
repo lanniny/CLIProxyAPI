@@ -338,6 +338,12 @@ func (s *Server) setupRoutes() {
 
 	// Root endpoint
 	s.engine.GET("/", func(c *gin.Context) {
+		// 如果请求来自浏览器（Accept header 包含 text/html），重定向到管理界面
+		if strings.Contains(c.GetHeader("Accept"), "text/html") {
+			c.Redirect(http.StatusMovedPermanently, "/management.html")
+			return
+		}
+		// API 请求返回 JSON 信息
 		c.JSON(http.StatusOK, gin.H{
 			"message": "CLI Proxy API Server",
 			"endpoints": []string{

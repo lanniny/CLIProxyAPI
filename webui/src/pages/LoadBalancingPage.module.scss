@@ -1,0 +1,598 @@
+@use '../styles/variables' as *;
+@use '../styles/mixins' as *;
+
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-lg;
+}
+
+.pageHeader {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-sm;
+}
+
+.pageTitle {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.description {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.headerActions {
+  display: flex;
+  gap: $spacing-sm;
+  flex-wrap: wrap;
+  margin-top: $spacing-sm;
+}
+
+.errorBox {
+  padding: $spacing-md;
+  background-color: rgba(239, 68, 68, 0.1);
+  border: 1px solid var(--danger-color);
+  border-radius: $radius-md;
+  color: var(--danger-color);
+  font-size: 14px;
+}
+
+.section {
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: $radius-lg;
+  overflow: hidden;
+}
+
+.sectionHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: $spacing-md $spacing-lg;
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+  gap: $spacing-md;
+  flex-wrap: wrap;
+
+  @include mobile {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+.sectionTitle {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: $spacing-sm;
+}
+
+.sectionTitleIcon {
+  width: 20px;
+  height: 20px;
+  color: var(--primary-color);
+}
+
+.sectionActions {
+  display: flex;
+  gap: $spacing-sm;
+  align-items: center;
+}
+
+.sectionContent {
+  padding: $spacing-lg;
+}
+
+.grid {
+  display: grid;
+  gap: $spacing-md;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+
+  @include mobile {
+    grid-template-columns: 1fr;
+  }
+}
+
+.card {
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: $radius-md;
+  padding: $spacing-md;
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-sm;
+  transition: transform $transition-fast, box-shadow $transition-fast, border-color $transition-fast;
+
+  &:hover {
+    transform: translateY(-2px);
+    box-shadow: $shadow-md;
+    border-color: rgba(37, 99, 235, 0.2);
+  }
+}
+
+.cardHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: $spacing-sm;
+}
+
+.cardTitle {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  word-break: break-all;
+  line-height: 1.4;
+}
+
+.cardProvider {
+  font-size: 12px;
+  color: var(--text-secondary);
+  background-color: var(--bg-secondary);
+  padding: 2px 8px;
+  border-radius: 12px;
+  white-space: nowrap;
+}
+
+.cardBody {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-xs;
+}
+
+.cardRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  gap: $spacing-sm;
+}
+
+.cardLabel {
+  color: var(--text-secondary);
+}
+
+.cardValue {
+  color: var(--text-primary);
+  font-weight: 500;
+  text-align: right;
+}
+
+.cardActions {
+  display: flex;
+  gap: $spacing-xs;
+  margin-top: $spacing-xs;
+  padding-top: $spacing-sm;
+  border-top: 1px dashed var(--border-color);
+}
+
+// Status badges
+.statusBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.statusHealthy {
+  background-color: rgba(34, 197, 94, 0.15);
+  color: var(--success-color, #22c55e);
+}
+
+.statusUnhealthy {
+  background-color: rgba(239, 68, 68, 0.15);
+  color: var(--danger-color, #ef4444);
+}
+
+.statusClosed {
+  background-color: rgba(34, 197, 94, 0.15);
+  color: var(--success-color, #22c55e);
+}
+
+.statusOpen {
+  background-color: rgba(239, 68, 68, 0.15);
+  color: var(--danger-color, #ef4444);
+}
+
+.statusHalfOpen {
+  background-color: rgba(245, 158, 11, 0.15);
+  color: var(--warning-color, #f59e0b);
+}
+
+.statusDisabled {
+  background-color: var(--bg-tertiary);
+  color: var(--text-tertiary);
+}
+
+// Weight input
+.weightInput {
+  width: 80px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: $radius-sm;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 13px;
+  text-align: center;
+
+  &:focus {
+    outline: none;
+    border-color: var(--primary-color);
+  }
+
+  &:disabled {
+    background-color: var(--bg-secondary);
+    color: var(--text-tertiary);
+    cursor: not-allowed;
+  }
+}
+
+// Empty state
+.emptyState {
+  text-align: center;
+  padding: $spacing-xl;
+  color: var(--text-secondary);
+}
+
+.emptyTitle {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: $spacing-xs;
+}
+
+.emptyDesc {
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+// Config info
+.configInfo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: $spacing-md;
+  padding: $spacing-md;
+  background-color: var(--bg-secondary);
+  border-radius: $radius-md;
+  margin-bottom: $spacing-md;
+}
+
+.configItem {
+  display: flex;
+  align-items: center;
+  gap: $spacing-xs;
+  font-size: 13px;
+}
+
+.configLabel {
+  color: var(--text-secondary);
+}
+
+.configValue {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+// Loading state
+.loading {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: $spacing-xl;
+  color: var(--text-secondary);
+}
+
+// Time display
+.timeAgo {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+// Error message in card
+.errorMessage {
+  font-size: 11px;
+  color: var(--danger-color);
+  background-color: rgba(239, 68, 68, 0.08);
+  padding: 4px 8px;
+  border-radius: $radius-sm;
+  word-break: break-all;
+}
+
+// Strategy badge
+.strategyBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border-radius: 16px;
+  font-size: 12px;
+  font-weight: 600;
+  background-color: var(--primary-color);
+  color: white;
+}
+
+// Indicator dot
+.indicatorDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+
+  &.green {
+    background-color: var(--success-color, #22c55e);
+  }
+
+  &.red {
+    background-color: var(--danger-color, #ef4444);
+  }
+
+  &.yellow {
+    background-color: var(--warning-color, #f59e0b);
+  }
+
+  &.gray {
+    background-color: var(--text-tertiary);
+  }
+}
+
+// Tabs
+.tabs {
+  display: flex;
+  gap: $spacing-xs;
+  padding: 0 $spacing-lg;
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.tab {
+  padding: $spacing-sm $spacing-md;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color $transition-fast, border-color $transition-fast;
+
+  &:hover {
+    color: var(--text-primary);
+  }
+
+  &.active {
+    color: var(--primary-color);
+    border-bottom-color: var(--primary-color);
+  }
+}
+
+// Routing strategy selector
+.strategySelector {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+}
+
+.strategyLabel {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.strategySelect {
+  padding: 6px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 14px;
+  cursor: pointer;
+  transition: border-color 0.2s;
+
+  &:focus {
+    outline: none;
+    border-color: var(--primary-color);
+  }
+
+  &:disabled {
+    background-color: var(--bg-secondary);
+    color: var(--text-tertiary);
+    cursor: not-allowed;
+  }
+}
+
+// Live indicator
+.liveIndicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  transition: all $transition-fast;
+
+  &.connected {
+    background-color: rgba(34, 197, 94, 0.15);
+    color: var(--success-color, #22c55e);
+
+    .liveDot {
+      background-color: var(--success-color, #22c55e);
+      animation: pulse-dot 2s ease-in-out infinite;
+    }
+  }
+
+  &.disconnected {
+    background-color: rgba(239, 68, 68, 0.15);
+    color: var(--danger-color, #ef4444);
+
+    .liveDot {
+      background-color: var(--danger-color, #ef4444);
+    }
+  }
+}
+
+.liveDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.liveText {
+  letter-spacing: 0.5px;
+}
+
+.reconnectBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: inherit;
+  opacity: 0.7;
+  transition: opacity $transition-fast;
+
+  &:hover {
+    opacity: 1;
+  }
+}
+
+.liveTag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  margin-left: 8px;
+  border-radius: 12px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  background-color: rgba(34, 197, 94, 0.15);
+  color: var(--success-color, #22c55e);
+
+  &::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background-color: var(--success-color, #22c55e);
+    animation: pulse-dot 2s ease-in-out infinite;
+  }
+}
+
+@keyframes pulse-dot {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(0.8);
+  }
+}
+
+// Strategy section
+.strategySection {
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: $radius-lg;
+  overflow: hidden;
+}
+
+.strategyHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: $spacing-md $spacing-lg;
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+  gap: $spacing-md;
+  flex-wrap: wrap;
+
+  @include mobile {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+.strategyTitle {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: $spacing-sm;
+}
+
+.strategyContent {
+  padding: $spacing-lg;
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-md;
+}
+
+.strategyDescription {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+
+  p {
+    margin: 0;
+  }
+}
+
+.sseError {
+  padding: $spacing-sm $spacing-lg;
+  background-color: rgba(239, 68, 68, 0.08);
+  color: var(--danger-color);
+  font-size: 12px;
+  border-top: 1px solid var(--border-color);
+}
+
+// Indicator dots with class names
+.dotGreen {
+  background-color: var(--success-color, #22c55e);
+}
+
+.dotRed {
+  background-color: var(--danger-color, #ef4444);
+}
+
+.dotYellow {
+  background-color: var(--warning-color, #f59e0b);
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+@keyframes blink {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
