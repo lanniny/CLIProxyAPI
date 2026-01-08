@@ -40,6 +40,7 @@ var (
 
 	currentConfigPtr    atomic.Pointer[config.Config]
 	disableControlPanel atomic.Bool
+	disableAutoUpdate   atomic.Bool
 	schedulerOnce       sync.Once
 	schedulerConfigPath atomic.Value
 )
@@ -54,6 +55,7 @@ func SetCurrentConfig(cfg *config.Config) {
 	prevDisabled := disableControlPanel.Load()
 	currentConfigPtr.Store(cfg)
 	disableControlPanel.Store(cfg.RemoteManagement.DisableControlPanel)
+	disableAutoUpdate.Store(cfg.RemoteManagement.DisableAutoUpdate)
 
 	if prevDisabled && !cfg.RemoteManagement.DisableControlPanel {
 		lastUpdateCheckMu.Lock()
@@ -190,6 +192,11 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 
 	if disableControlPanel.Load() {
 		log.Debug("management asset sync skipped: control panel disabled by configuration")
+		return
+	}
+
+	if disableAutoUpdate.Load() {
+		log.Debug("management asset sync skipped: auto-update disabled by configuration")
 		return
 	}
 

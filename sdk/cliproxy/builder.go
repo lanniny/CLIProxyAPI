@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -211,7 +212,7 @@ func (b *Builder) Build() (*Service, error) {
 			selector = &coreauth.RoundRobinSelector{}
 		}
 
-		coreManager = coreauth.NewManager(tokenStore, selector, nil)
+		coreManager = coreauth.NewManager(tokenStore, selector, nil, registry.GetGlobalRegistry())
 	}
 	// Attach a default RoundTripper provider so providers can opt-in per-auth transports.
 	coreManager.SetRoundTripperProvider(newDefaultRoundTripperProvider())

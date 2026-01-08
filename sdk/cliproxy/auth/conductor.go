@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,7 +14,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
@@ -31,6 +31,15 @@ type ProviderExecutor interface {
 	Refresh(ctx context.Context, auth *Auth) (*Auth, error)
 	// CountTokens returns the token count for the given request.
 	CountTokens(ctx context.Context, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error)
+}
+
+// HealthCheckExecutor is an optional interface that executors can implement
+// to provide custom health check logic beyond token refresh.
+// This is particularly useful for API key credentials that cannot be validated via Refresh.
+type HealthCheckExecutor interface {
+	// HealthCheck performs a lightweight health check on the credential.
+	// Returns nil if healthy, error otherwise.
+	HealthCheck(ctx context.Context, auth *Auth) error
 }
 
 // RefreshEvaluator allows runtime state to override refresh decisions.
@@ -102,6 +111,7 @@ type Manager struct {
 	executors map[string]ProviderExecutor
 	selector  Selector
 	hook      Hook
+	registry  ModelRegistry
 	mu        sync.RWMutex
 	auths     map[string]*Auth
 	// providerOffsets tracks per-model provider rotation state for multi-provider routing.
@@ -117,25 +127,34 @@ type Manager struct {
 	// Optional HTTP RoundTripper provider injected by host.
 	rtProvider RoundTripperProvider
 
+	// Circuit breaker manager for fault tolerance.
+	circuitBreakers *CircuitBreakerManager
+
 	// Auto refresh state
 	refreshCancel context.CancelFunc
 }
 
-// NewManager constructs a manager with optional custom selector and hook.
-func NewManager(store Store, selector Selector, hook Hook) *Manager {
+// NewManager constructs a manager with optional custom selector, hook, and model registry.
+// If registry is nil, a no-op implementation is used that allows all models.
+func NewManager(store Store, selector Selector, hook Hook, registry ModelRegistry) *Manager {
 	if selector == nil {
 		selector = &RoundRobinSelector{}
 	}
 	if hook == nil {
 		hook = NoopHook{}
 	}
+	if registry == nil {
+		registry = noopModelRegistry{}
+	}
 	return &Manager{
 		store:           store,
 		executors:       make(map[string]ProviderExecutor),
 		selector:        selector,
 		hook:            hook,
+		registry:        registry,
 		auths:           make(map[string]*Auth),
 		providerOffsets: make(map[string]int),
+		circuitBreakers: NewCircuitBreakerManager(DefaultCircuitBreakerConfig()),
 	}
 }
 
@@ -149,6 +168,20 @@ func (m *Manager) SetSelector(selector Selector) {
 	m.mu.Lock()
 	m.selector = selector
 	m.mu.Unlock()
+}
+
+// recordLatencyIfSupported records latency metrics if the selector implements MetricsRecorder.
+// This enables latency-aware and adaptive selectors to make informed load balancing decisions.
+func (m *Manager) recordLatencyIfSupported(authID string, latency time.Duration, success bool) {
+	if m == nil {
+		return
+	}
+	m.mu.RLock()
+	selector := m.selector
+	m.mu.RUnlock()
+	if mr, ok := selector.(MetricsRecorder); ok {
+		mr.RecordLatency(authID, latency, success)
+	}
 }
 
 // SetStore swaps the underlying persistence store.
@@ -240,21 +273,51 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 func (m *Manager) Load(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	log.Debugf("auth manager Load: starting, store=%v", m.store != nil)
+
 	if m.store == nil {
+		log.Warnf("auth manager Load: store is nil, skipping load")
 		return nil
 	}
+
 	items, err := m.store.List(ctx)
 	if err != nil {
+		log.Errorf("auth manager Load: failed to list from store: %v", err)
 		return err
 	}
+
+	log.Infof("auth manager Load: loaded %d item(s) from store", len(items))
+
+	var loaded, skipped int
 	m.auths = make(map[string]*Auth, len(items))
 	for _, auth := range items {
 		if auth == nil || auth.ID == "" {
+			skipped++
 			continue
 		}
 		auth.EnsureIndex()
 		m.auths[auth.ID] = auth.Clone()
+		loaded++
 	}
+
+	if skipped > 0 {
+		log.Debugf("auth manager Load: skipped %d invalid item(s)", skipped)
+	}
+
+	// Log directory path if available from first auth
+	var authDir string
+	if len(items) > 0 && items[0] != nil && items[0].Attributes != nil {
+		if path := items[0].Attributes["path"]; path != "" {
+			authDir = filepath.Dir(path)
+		}
+	}
+	if authDir != "" {
+		log.Infof("auth manager Load: loaded %d auth(s) into memory from directory: %s", loaded, authDir)
+	} else {
+		log.Infof("auth manager Load: loaded %d auth(s) into memory", loaded)
+	}
+
 	return nil
 }
 
@@ -414,7 +477,9 @@ func (m *Manager) executeWithProvider(ctx context.Context, provider string, req 
 		execReq := req
 		execReq.Model, execReq.Metadata = rewriteModelForAuth(routeModel, req.Metadata, auth)
 		execReq.Model, execReq.Metadata = m.applyOAuthModelMapping(auth, execReq.Model, execReq.Metadata)
+		execStart := time.Now()
 		resp, errExec := executor.Execute(execCtx, auth, execReq, opts)
+		execLatency := time.Since(execStart)
 		result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: errExec == nil}
 		if errExec != nil {
 			result.Error = &Error{Message: errExec.Error()}
@@ -426,10 +491,20 @@ func (m *Manager) executeWithProvider(ctx context.Context, provider string, req 
 				result.RetryAfter = ra
 			}
 			m.MarkResult(execCtx, result)
+			m.recordLatencyIfSupported(auth.ID, execLatency, false)
+			// Record failure for circuit breaker
+			if m.circuitBreakers != nil {
+				m.circuitBreakers.RecordFailure(auth.ID)
+			}
 			lastErr = errExec
 			continue
 		}
 		m.MarkResult(execCtx, result)
+		m.recordLatencyIfSupported(auth.ID, execLatency, true)
+		// Record success for circuit breaker
+		if m.circuitBreakers != nil {
+			m.circuitBreakers.RecordSuccess(auth.ID)
+		}
 		return resp, nil
 	}
 }
@@ -488,10 +563,18 @@ func (m *Manager) executeCountWithProvider(ctx context.Context, provider string,
 				result.RetryAfter = ra
 			}
 			m.MarkResult(execCtx, result)
+			// Record failure for circuit breaker
+			if m.circuitBreakers != nil {
+				m.circuitBreakers.RecordFailure(auth.ID)
+			}
 			lastErr = errExec
 			continue
 		}
 		m.MarkResult(execCtx, result)
+		// Record success for circuit breaker
+		if m.circuitBreakers != nil {
+			m.circuitBreakers.RecordSuccess(auth.ID)
+		}
 		return resp, nil
 	}
 }
@@ -538,7 +621,9 @@ func (m *Manager) executeStreamWithProvider(ctx context.Context, provider string
 		execReq := req
 		execReq.Model, execReq.Metadata = rewriteModelForAuth(routeModel, req.Metadata, auth)
 		execReq.Model, execReq.Metadata = m.applyOAuthModelMapping(auth, execReq.Model, execReq.Metadata)
+		streamStart := time.Now()
 		chunks, errStream := executor.ExecuteStream(execCtx, auth, execReq, opts)
+		streamLatency := time.Since(streamStart)
 		if errStream != nil {
 			rerr := &Error{Message: errStream.Error()}
 			var se cliproxyexecutor.StatusError
@@ -548,9 +633,16 @@ func (m *Manager) executeStreamWithProvider(ctx context.Context, provider string
 			result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: false, Error: rerr}
 			result.RetryAfter = retryAfterFromError(errStream)
 			m.MarkResult(execCtx, result)
+			m.recordLatencyIfSupported(auth.ID, streamLatency, false)
+			// Record failure for circuit breaker
+			if m.circuitBreakers != nil {
+				m.circuitBreakers.RecordFailure(auth.ID)
+			}
 			lastErr = errStream
 			continue
 		}
+		// Record successful stream setup latency
+		m.recordLatencyIfSupported(auth.ID, streamLatency, true)
 		out := make(chan cliproxyexecutor.StreamChunk)
 		go func(streamCtx context.Context, streamAuth *Auth, streamProvider string, streamChunks <-chan cliproxyexecutor.StreamChunk) {
 			defer close(out)
@@ -564,11 +656,19 @@ func (m *Manager) executeStreamWithProvider(ctx context.Context, provider string
 						rerr.HTTPStatus = se.StatusCode()
 					}
 					m.MarkResult(streamCtx, Result{AuthID: streamAuth.ID, Provider: streamProvider, Model: routeModel, Success: false, Error: rerr})
+					// Record failure for circuit breaker
+					if m.circuitBreakers != nil {
+						m.circuitBreakers.RecordFailure(streamAuth.ID)
+					}
 				}
 				out <- chunk
 			}
 			if !failed {
 				m.MarkResult(streamCtx, Result{AuthID: streamAuth.ID, Provider: streamProvider, Model: routeModel, Success: true})
+				// Record success for circuit breaker
+				if m.circuitBreakers != nil {
+					m.circuitBreakers.RecordSuccess(streamAuth.ID)
+				}
 			}
 		}(execCtx, auth.Clone(), provider, chunks)
 		return out, nil
@@ -807,6 +907,8 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		now := time.Now()
 
 		if result.Success {
+			// Mark credential as verified on first successful execution
+			auth.Verified = true
 			if result.Model != "" {
 				state := ensureModelState(auth, result.Model)
 				resetModelState(state, now)
@@ -894,15 +996,15 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	m.mu.Unlock()
 
 	if clearModelQuota && result.Model != "" {
-		registry.GetGlobalRegistry().ClearModelQuotaExceeded(result.AuthID, result.Model)
+		m.registry.ClearModelQuotaExceeded(result.AuthID, result.Model)
 	}
 	if setModelQuota && result.Model != "" {
-		registry.GetGlobalRegistry().SetModelQuotaExceeded(result.AuthID, result.Model)
+		m.registry.SetModelQuotaExceeded(result.AuthID, result.Model)
 	}
 	if shouldResumeModel {
-		registry.GetGlobalRegistry().ResumeClientModel(result.AuthID, result.Model)
+		m.registry.ResumeClientModel(result.AuthID, result.Model)
 	} else if shouldSuspendModel {
-		registry.GetGlobalRegistry().SuspendClientModel(result.AuthID, result.Model, suspendReason)
+		m.registry.SuspendClientModel(result.AuthID, result.Model, suspendReason)
 	}
 
 	m.hook.OnResult(ctx, result)
@@ -1179,6 +1281,26 @@ func (m *Manager) GetByID(id string) (*Auth, bool) {
 	return auth.Clone(), true
 }
 
+// getCredentialType returns the credential type for the given auth.
+// Returns "oauth" for OAuth credentials, "api_key" for API key credentials,
+// or empty string if type cannot be determined.
+func getCredentialType(auth *Auth) string {
+	if auth == nil {
+		return ""
+	}
+	authType, _ := auth.AccountInfo()
+	return authType
+}
+
+// pickNext selects the next available credential for the given provider and model.
+// It implements two-phase credential selection:
+//   - Phase 1: OAuth credentials are tried first (typically higher quotas)
+//   - Phase 2: API key credentials are used as fallback only when all OAuth
+//     credentials are exhausted, unavailable, or have open circuit breakers
+//
+// This ensures OAuth credentials are preferred while maintaining availability
+// through API key fallback. The selector (round-robin or fill-first) is applied
+// within each phase's candidate pool.
 func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
 	m.mu.RLock()
 	executor, okExecutor := m.executors[provider]
@@ -1186,9 +1308,11 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 		m.mu.RUnlock()
 		return nil, nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
 	}
-	candidates := make([]*Auth, 0, len(m.auths))
+
+	// Two-phase credential selection: OAuth first, API Key fallback
+	var oauthCandidates, apiKeyCandidates []*Auth
 	modelKey := strings.TrimSpace(model)
-	registryRef := registry.GetGlobalRegistry()
+	registryRef := m.registry
 	for _, candidate := range m.auths {
 		if candidate.Provider != provider || candidate.Disabled {
 			continue
@@ -1199,8 +1323,27 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 		if modelKey != "" && registryRef != nil && !registryRef.ClientSupportsModel(candidate.ID, modelKey) {
 			continue
 		}
-		candidates = append(candidates, candidate)
+		// Circuit breaker check: skip credentials with open circuit
+		if m.circuitBreakers != nil && !m.circuitBreakers.Allow(candidate.ID) {
+			continue
+		}
+		// Classify by credential type for two-phase selection
+		credType := getCredentialType(candidate)
+		if credType == "api_key" {
+			apiKeyCandidates = append(apiKeyCandidates, candidate)
+		} else {
+			// OAuth and unknown types go to primary candidates (backward compat)
+			oauthCandidates = append(oauthCandidates, candidate)
+		}
 	}
+
+	// Phase 1: Use OAuth credentials if available
+	// Phase 2: Fallback to API Key only when ALL OAuth exhausted
+	candidates := oauthCandidates
+	if len(candidates) == 0 {
+		candidates = apiKeyCandidates
+	}
+
 	if len(candidates) == 0 {
 		m.mu.RUnlock()
 		return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available"}
@@ -1615,6 +1758,93 @@ func logEntryWithRequestID(ctx context.Context) *log.Entry {
 		return log.WithField("request_id", reqID)
 	}
 	return log.NewEntry(log.StandardLogger())
+}
+
+// CircuitBreakerStats returns circuit breaker statistics for all credentials.
+func (m *Manager) CircuitBreakerStats() map[string]CircuitBreakerStats {
+	if m == nil || m.circuitBreakers == nil {
+		return nil
+	}
+	return m.circuitBreakers.Stats()
+}
+
+// ResetCircuitBreaker resets the circuit breaker for a specific credential.
+func (m *Manager) ResetCircuitBreaker(authID string) {
+	if m == nil || m.circuitBreakers == nil {
+		return
+	}
+	m.circuitBreakers.Reset(authID)
+}
+
+// TriggerRefresh manually triggers a refresh/health check for a specific credential.
+func (m *Manager) TriggerRefresh(ctx context.Context, authID string) error {
+	if m == nil || authID == "" {
+		return nil
+	}
+	m.mu.RLock()
+	auth := m.auths[authID]
+	var exec ProviderExecutor
+	if auth != nil {
+		exec = m.executors[auth.Provider]
+	}
+	m.mu.RUnlock()
+	if auth == nil {
+		return &Error{Code: "auth_not_found", Message: "credential not found"}
+	}
+	if exec == nil {
+		return &Error{Code: "executor_not_found", Message: "executor not registered"}
+	}
+
+	// Perform refresh
+	cloned := auth.Clone()
+	updated, err := exec.Refresh(ctx, cloned)
+	now := time.Now()
+
+	m.mu.Lock()
+	if current, exists := m.auths[authID]; exists {
+		current.LastHealthCheck = now
+		current.HealthCheckCount++
+		if err != nil {
+			current.HealthCheckFails++
+			current.LastHealthError = err.Error()
+		} else {
+			current.HealthCheckFails = 0
+			current.LastHealthError = ""
+			current.Verified = true
+			if updated != nil {
+				current.Metadata = updated.Metadata
+				current.LastRefreshedAt = now
+			}
+		}
+		current.UpdatedAt = now
+	}
+	m.mu.Unlock()
+
+	return err
+}
+
+// ResetHealthStatus resets the health status for a specific credential.
+func (m *Manager) ResetHealthStatus(authID string) error {
+	if m == nil || authID == "" {
+		return &Error{Code: "invalid_input", Message: "auth_id is required"}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	auth, exists := m.auths[authID]
+	if !exists || auth == nil {
+		return &Error{Code: "auth_not_found", Message: "credential not found"}
+	}
+
+	// Reset health-related fields
+	auth.Unavailable = false
+	auth.StatusMessage = ""
+	auth.NextRetryAfter = time.Time{}
+	auth.HealthCheckFails = 0
+	auth.LastHealthError = ""
+	auth.UpdatedAt = time.Now()
+
+	return nil
 }
 
 // InjectCredentials delegates per-provider HTTP request preparation when supported.

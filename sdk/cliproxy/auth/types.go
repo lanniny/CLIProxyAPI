@@ -36,6 +36,19 @@ type Auth struct {
 	Disabled bool `json:"disabled"`
 	// Unavailable flags transient provider unavailability (e.g. quota exceeded).
 	Unavailable bool `json:"unavailable"`
+	// Verified indicates the credential has been successfully validated at least once.
+	Verified bool `json:"verified"`
+	// LastHealthCheck records the last health check timestamp in UTC.
+	LastHealthCheck time.Time `json:"last_health_check,omitempty"`
+	// HealthCheckCount tracks the total number of health checks performed.
+	HealthCheckCount int `json:"health_check_count,omitempty"`
+	// HealthCheckFails tracks consecutive health check failures.
+	HealthCheckFails int `json:"health_check_fails,omitempty"`
+	// LastHealthError stores the last health check error message.
+	LastHealthError string `json:"last_health_error,omitempty"`
+	// Weight controls load balancing priority (0 = default/equal weight, higher = more traffic).
+	// Used by weighted-round-robin strategy. Ignored if <= 0.
+	Weight int `json:"weight,omitempty"`
 	// ProxyURL overrides the global proxy setting for this auth if provided.
 	ProxyURL string `json:"proxy_url,omitempty"`
 	// Attributes stores provider specific metadata needed by executors (immutable configuration).

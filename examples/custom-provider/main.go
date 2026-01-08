@@ -164,7 +164,7 @@ func main() {
 	if dirSetter, ok := tokenStore.(interface{ SetBaseDir(string) }); ok {
 		dirSetter.SetBaseDir(cfg.AuthDir)
 	}
-	core := coreauth.NewManager(tokenStore, nil, nil)
+	core := coreauth.NewManager(tokenStore, nil, nil, nil)
 	core.RegisterExecutor(MyExecutor{})
 
 	hooks := cliproxy.Hooks{

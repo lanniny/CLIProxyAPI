@@ -782,6 +782,37 @@ func GetAntigravityModelConfig() map[string]*AntigravityModelConfig {
 	}
 }
 
+// GetKiroModels returns supported models for Kiro/AWS CodeWhisperer OAuth accounts.
+func GetKiroModels() []*ModelInfo {
+	return []*ModelInfo{
+		{
+			ID:                  "claude-sonnet-4",
+			Name:                "claude-sonnet-4",
+			Object:              "model",
+			Created:             1767225600, // 2026-01-01
+			OwnedBy:             "kiro",
+			Type:                "kiro",
+			DisplayName:         "Claude Sonnet 4",
+			Description:         "Claude Sonnet 4 via Kiro",
+			ContextLength:       200000,
+			MaxCompletionTokens: 64000,
+		},
+		{
+			ID:                  "claude-sonnet-4-thinking",
+			Name:                "claude-sonnet-4-thinking",
+			Object:              "model",
+			Created:             1767225600, // 2026-01-01
+			OwnedBy:             "kiro",
+			Type:                "kiro",
+			DisplayName:         "Claude Sonnet 4 Thinking",
+			Description:         "Claude Sonnet 4 with extended thinking via Kiro",
+			ContextLength:       200000,
+			MaxCompletionTokens: 64000,
+			Thinking:            &ThinkingSupport{Min: 1024, Max: 200000, ZeroAllowed: false, DynamicAllowed: true},
+		},
+	}
+}
+
 // LookupStaticModelInfo searches all static model definitions for a model by ID.
 // Returns nil if no matching model is found.
 func LookupStaticModelInfo(modelID string) *ModelInfo {
@@ -797,6 +828,7 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		GetOpenAIModels(),
 		GetQwenModels(),
 		GetIFlowModels(),
+		GetKiroModels(),
 	}
 	for _, models := range allModels {
 		for _, m := range models {

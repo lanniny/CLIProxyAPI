@@ -25,6 +25,11 @@ remote-management:
   # Disable the bundled management control panel asset download and HTTP route when true.
   disable-control-panel: false
 
+  # Disable automatic updates of the management panel asset.
+  # When true, the local management.html file will not be overwritten by remote updates.
+  # This is useful when you have made local modifications to the management panel.
+  disable-auto-update: false
+
   # GitHub repository for the management control panel. Accepts a repository URL or releases API URL.
   panel-github-repository: "https://github.com/router-for-me/Cli-Proxy-API-Management-Center"
 

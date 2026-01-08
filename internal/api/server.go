@@ -287,6 +287,8 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 	// Register management routes when configuration or environment secrets are available.
 	hasManagementSecret := cfg.RemoteManagement.SecretKey != "" || envManagementSecret
+	fmt.Printf("DEBUG NewServer: SecretKey=%q, envAdminPasswordSet=%v, envManagementSecret=%v, hasManagementSecret=%v\n",
+		cfg.RemoteManagement.SecretKey, envAdminPasswordSet, envManagementSecret, hasManagementSecret)
 	s.managementRoutesEnabled.Store(hasManagementSecret)
 	if hasManagementSecret {
 		s.registerManagementRoutes()
@@ -302,16 +304,58 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		Handler: engine,
 	}
 
+	// Check if engine is nil
+	fmt.Printf("DEBUG engine: %v\n", engine != nil)
+
+	// Direct route test in NewServer
+	engine.GET("/test-direct", func(c *gin.Context) {
+		fmt.Printf("DEBUG /test-direct called!\n")
+		c.JSON(http.StatusOK, gin.H{"message": "direct route works"})
+	})
+
 	return s
 }
 
 // setupRoutes configures the API routes for the server.
 // It defines the endpoints and associates them with their respective handlers.
 func (s *Server) setupRoutes() {
+	fmt.Printf("DEBUG setupRoutes called\n")
+	// Test route at root level - simple path
+	s.engine.GET("/test-root", func(c *gin.Context) {
+		fmt.Printf("DEBUG /test-root called!\n")
+		c.JSON(http.StatusOK, gin.H{"message": "root test route works"})
+	})
+
+	// Another test route with different path
+	fmt.Printf("DEBUG about to register /hello route\n")
+	s.engine.GET("/hello", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"message": "hello works"})
+	})
+	fmt.Printf("DEBUG /hello route registered\n")
+
+	// Delayed route registration to test if routes are cleared later
+	go func() {
+		time.Sleep(2 * time.Second)
+		fmt.Printf("DEBUG delayed route registration\n")
+		s.engine.GET("/test-delayed", func(c *gin.Context) {
+			fmt.Printf("DEBUG /test-delayed called!\n")
+			c.JSON(http.StatusOK, gin.H{"message": "delayed route works"})
+		})
+	}()
+
+	fmt.Printf("DEBUG about to register /management.html route\n")
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
+	fmt.Printf("DEBUG /management.html route registered\n")
+
+	// Print all registered routes
+	for _, route := range s.engine.Routes() {
+		if route.Path == "/management.html" {
+			fmt.Printf("DEBUG Found /management.html route: method=%s, handler=%s\n", route.Method, route.Handler)
+		}
+	}
+
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
 	geminiHandlers := gemini.NewGeminiAPIHandler(s.handlers)
-	geminiCLIHandlers := gemini.NewGeminiCLIAPIHandler(s.handlers)
 	claudeCodeHandlers := claude.NewClaudeCodeAPIHandler(s.handlers)
 	openaiResponsesHandlers := openai.NewOpenAIResponsesAPIHandler(s.handlers)
 
@@ -353,7 +397,6 @@ func (s *Server) setupRoutes() {
 			},
 		})
 	})
-	s.engine.POST("/v1internal:method", geminiCLIHandlers.CLIHandler)
 
 	// OAuth callback endpoints (reuse main server port)
 	// These endpoints receive provider redirects and persist
@@ -421,8 +464,35 @@ func (s *Server) setupRoutes() {
 		if errStr == "" {
 			errStr = c.Query("error_description")
 		}
+		log.Infof("[antigravity callback] state=%s, code_len=%d, error=%s, auth_dir=%s", state, len(code), errStr, s.cfg.AuthDir)
 		if state != "" {
-			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.AuthDir, "antigravity", state, code, errStr)
+			filePath, writeErr := managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.AuthDir, "antigravity", state, code, errStr)
+			if writeErr != nil {
+				log.Errorf("[antigravity callback] failed to write callback file: %v", writeErr)
+			} else {
+				log.Infof("[antigravity callback] wrote callback file: %s", filePath)
+			}
+		}
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusOK, oauthCallbackSuccessHTML)
+	})
+
+	s.engine.GET("/kiro/callback", func(c *gin.Context) {
+		code := c.Query("code")
+		state := c.Query("state")
+		errStr := c.Query("error")
+		if errStr == "" {
+			errStr = c.Query("error_description")
+		}
+		log.Infof("[kiro callback] state=%s, code_len=%d, error=%s, auth_dir=%s", state, len(code), errStr, s.cfg.AuthDir)
+		// Kiro doesn't use OAuth callbacks - this is just for consistency
+		if state != "" {
+			filePath, writeErr := managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.AuthDir, "kiro", state, code, errStr)
+			if writeErr != nil {
+				log.Errorf("[kiro callback] failed to write callback file: %v", writeErr)
+			} else {
+				log.Infof("[kiro callback] wrote callback file: %s", filePath)
+			}
 		}
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.String(http.StatusOK, oauthCallbackSuccessHTML)
@@ -469,17 +539,30 @@ func (s *Server) AttachWebsocketRoute(path string, handler http.Handler) {
 }
 
 func (s *Server) registerManagementRoutes() {
+	fmt.Printf("DEBUG registerManagementRoutes called\n")
 	if s == nil || s.engine == nil || s.mgmt == nil {
+		fmt.Printf("DEBUG registerManagementRoutes early return: s=%v, engine=%v, mgmt=%v\n", s != nil, s != nil && s.engine != nil, s != nil && s.mgmt != nil)
 		return
 	}
 	if !s.managementRoutesRegistered.CompareAndSwap(false, true) {
+		fmt.Printf("DEBUG management routes already registered\n")
 		return
 	}
 
+	fmt.Printf("DEBUG registering management routes...\n")
 	log.Info("management routes registered after secret key configuration")
 
+	// Debug route at engine level
+	s.engine.GET("/debug-test", func(c *gin.Context) {
+		c.JSON(200, gin.H{"message": "debug test works"})
+	})
+	fmt.Printf("DEBUG debug-test route registered\n")
+
 	mgmt := s.engine.Group("/v0/management")
+	fmt.Printf("DEBUG mgmt group created: %v\n", mgmt != nil)
+	// Apply middleware for management routes
 	mgmt.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware())
+	fmt.Printf("DEBUG middleware applied\n")
 	{
 		mgmt.GET("/usage", s.mgmt.GetUsageStatistics)
 		mgmt.GET("/usage/export", s.mgmt.ExportUsageStatistics)
@@ -593,24 +676,66 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/auth-files/models", s.mgmt.GetAuthFileModels)
 		mgmt.GET("/auth-files/download", s.mgmt.DownloadAuthFile)
 		mgmt.POST("/auth-files", s.mgmt.UploadAuthFile)
+		mgmt.PATCH("/auth-files", s.mgmt.PatchAuthFile)
 		mgmt.DELETE("/auth-files", s.mgmt.DeleteAuthFile)
 		mgmt.POST("/vertex/import", s.mgmt.ImportVertexCredential)
+
+		mgmt.GET("/credential-weights", s.mgmt.GetCredentialWeights)
+		mgmt.PUT("/credential-weights", s.mgmt.PutCredentialWeights)
+
+		mgmt.GET("/health-status", s.mgmt.GetHealthStatus)
+		mgmt.GET("/health-status/stream", s.mgmt.StreamHealthStatus)
+		mgmt.GET("/circuit-breakers", s.mgmt.GetCircuitBreakerStatus)
+		mgmt.POST("/circuit-breakers/:auth_id/reset", s.mgmt.ResetCircuitBreaker)
+		mgmt.POST("/health-check/trigger/:auth_id", s.mgmt.TriggerHealthCheck)
+		mgmt.POST("/credentials/:auth_id/health-reset", s.mgmt.ResetHealthStatus)
+
+		// Debug: Test inline handler vs external handler
+		mgmt.GET("/routing-strategy-debug", func(c *gin.Context) {
+			fmt.Printf("DEBUG routing-strategy-debug called!\n")
+			c.JSON(200, gin.H{"debug": "inline handler works"})
+		})
+		mgmt.GET("/routing-strategy", s.mgmt.GetRoutingStrategy)
+		mgmt.PUT("/routing-strategy", s.mgmt.PutRoutingStrategy)
 
 		mgmt.GET("/anthropic-auth-url", s.mgmt.RequestAnthropicToken)
 		mgmt.GET("/codex-auth-url", s.mgmt.RequestCodexToken)
 		mgmt.GET("/gemini-cli-auth-url", s.mgmt.RequestGeminiCLIToken)
 		mgmt.GET("/antigravity-auth-url", s.mgmt.RequestAntigravityToken)
+		mgmt.GET("/kiro-auth-url", s.mgmt.RequestKiroToken)
+		mgmt.POST("/kiro-import-credentials", s.mgmt.ImportKiroCredentials)
 		mgmt.GET("/qwen-auth-url", s.mgmt.RequestQwenToken)
 		mgmt.GET("/iflow-auth-url", s.mgmt.RequestIFlowToken)
 		mgmt.POST("/iflow-auth-url", s.mgmt.RequestIFlowCookieToken)
 		mgmt.POST("/oauth-callback", s.mgmt.PostOAuthCallback)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
+
+		// Test route to verify registration
+		mgmt.GET("/test-route", func(c *gin.Context) {
+			fmt.Printf("DEBUG test-route called!\n")
+			c.JSON(http.StatusOK, gin.H{"message": "test route works"})
+		})
+
+		// Debug: print all registered routes
+		fmt.Printf("DEBUG routes registration complete\n")
+		routes := s.engine.Routes()
+		fmt.Printf("DEBUG Total routes registered: %d\n", len(routes))
+		for _, route := range routes {
+			if strings.Contains(route.Path, "/v0/management") {
+				fmt.Printf("DEBUG Management route: %s %s\n", route.Method, route.Path)
+			}
+		}
 	}
 }
 
 func (s *Server) managementAvailabilityMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if !s.managementRoutesEnabled.Load() {
+		fmt.Fprintf(os.Stderr, "MIDDLEWARE CALLED: %s\n", c.Request.URL.Path)
+		fmt.Printf("DEBUG middleware called: path=%s\n", c.Request.URL.Path)
+		enabled := s.managementRoutesEnabled.Load()
+		fmt.Printf("DEBUG middleware: managementRoutesEnabled=%v, path=%s\n", enabled, c.Request.URL.Path)
+		if !enabled {
+			fmt.Printf("DEBUG middleware: Aborting with 404, enabled=%v\n", enabled)
 			c.AbortWithStatus(http.StatusNotFound)
 			return
 		}
@@ -619,19 +744,27 @@ func (s *Server) managementAvailabilityMiddleware() gin.HandlerFunc {
 }
 
 func (s *Server) serveManagementControlPanel(c *gin.Context) {
+	fmt.Printf("DEBUG serveManagementControlPanel called: path=%s\n", c.Request.URL.Path)
 	cfg := s.cfg
+	log.Debugf("serveManagementControlPanel: cfg=%v, DisableControlPanel=%v", cfg != nil, cfg != nil && cfg.RemoteManagement.DisableControlPanel)
+	fmt.Printf("DEBUG serveManagementControlPanel: cfg=%v, DisableControlPanel=%v\n", cfg != nil, cfg != nil && cfg.RemoteManagement.DisableControlPanel)
 	if cfg == nil || cfg.RemoteManagement.DisableControlPanel {
+		fmt.Printf("DEBUG serveManagementControlPanel: returning 404 due to cfg=%v, DisableControlPanel=%v\n", cfg != nil, cfg != nil && cfg.RemoteManagement.DisableControlPanel)
 		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
 	filePath := managementasset.FilePath(s.configFilePath)
+	log.Debugf("serveManagementControlPanel: configFilePath=%s, filePath=%s", s.configFilePath, filePath)
+	fmt.Printf("DEBUG serveManagementControlPanel: configFilePath=%s, filePath=%s\n", s.configFilePath, filePath)
 	if strings.TrimSpace(filePath) == "" {
+		fmt.Printf("DEBUG serveManagementControlPanel: returning 404 due to empty filePath\n")
 		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
 
 	if _, err := os.Stat(filePath); err != nil {
 		if os.IsNotExist(err) {
+			fmt.Printf("DEBUG serveManagementControlPanel: file not found: %s\n", filePath)
 			go managementasset.EnsureLatestManagementHTML(context.Background(), managementasset.StaticDir(s.configFilePath), cfg.ProxyURL, cfg.RemoteManagement.PanelGitHubRepository)
 			c.AbortWithStatus(http.StatusNotFound)
 			return
@@ -642,6 +775,7 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 		return
 	}
 
+	fmt.Printf("DEBUG serveManagementControlPanel: serving file: %s\n", filePath)
 	c.File(filePath)
 }
 
@@ -837,6 +971,8 @@ func (s *Server) applyAccessConfig(oldCfg, newCfg *config.Config) {
 //   - clients: The new slice of AI service clients
 //   - cfg: The new application configuration
 func (s *Server) UpdateClients(cfg *config.Config) {
+	fmt.Printf("DEBUG: UpdateClients called, SecretKey=%q, envManagementSecret=%v, managementRoutesEnabled=%v\n",
+		cfg.RemoteManagement.SecretKey, s.envManagementSecret, s.managementRoutesEnabled.Load())
 	// Reconstruct old config from YAML snapshot to avoid reference sharing issues
 	var oldCfg *config.Config
 	if len(s.oldConfigYaml) > 0 {
@@ -994,6 +1130,8 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 		vertexAICompatCount,
 		openAICompatCount,
 	)
+
+	fmt.Printf("DEBUG UpdateClients end: managementRoutesEnabled=%v\n", s.managementRoutesEnabled.Load())
 }
 
 func (s *Server) SetWebsocketAuthChangeHandler(fn func(bool, bool)) {

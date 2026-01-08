@@ -138,13 +138,14 @@ func startCallbackForwarder(port int, provider, targetBase string) (*callbackFor
 		stopForwarderInstance(port, prev)
 	}
 
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	addr := fmt.Sprintf("0.0.0.0:%d", port) // 绑定所有接口，支持Docker端口映射
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 使用反向代理而不是重定向，避免Docker环境下127.0.0.1访问问题
 		target := targetBase
 		if raw := r.URL.RawQuery; raw != "" {
 			if strings.Contains(target, "?") {
@@ -153,8 +154,27 @@ func startCallbackForwarder(port int, provider, targetBase string) (*callbackFor
 				target = target + "?" + raw
 			}
 		}
+
+		// 发起内部请求
+		resp, err := http.Get(target)
+		if err != nil {
+			log.WithError(err).Errorf("callback forwarder failed to proxy request to %s", target)
+			http.Error(w, "Internal callback error", http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+
+		// 复制响应头
+		for k, v := range resp.Header {
+			for _, vv := range v {
+				w.Header().Add(k, vv)
+			}
+		}
 		w.Header().Set("Cache-Control", "no-store")
-		http.Redirect(w, r, target, http.StatusFound)
+		w.WriteHeader(resp.StatusCode)
+
+		// 复制响应体
+		io.Copy(w, resp.Body)
 	})
 
 	srv := &http.Server{
@@ -389,6 +409,7 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 		"runtime_only":   runtimeOnly,
 		"source":         "memory",
 		"size":           int64(0),
+		"weight":         auth.Weight,
 	}
 	if email := authEmail(auth); email != "" {
 		entry["email"] = email
@@ -2264,6 +2285,307 @@ func checkCloudAPIIsEnabled(ctx context.Context, httpClient *http.Client, projec
 	return true, nil
 }
 
+// RequestKiroToken handles Kiro OAuth credential import.
+// Since Kiro uses browser-based OAuth through the Kiro IDE, this endpoint
+// accepts credentials JSON exported from Kiro IDE for import.
+func (h *Handler) RequestKiroToken(c *gin.Context) {
+	fmt.Println("Initializing Kiro credential import...")
+
+	state, errState := misc.GenerateRandomState()
+	if errState != nil {
+		log.Errorf("Failed to generate state parameter: %v", errState)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state parameter"})
+		return
+	}
+
+	RegisterOAuthSession(state, "kiro")
+
+	// For Kiro, we return instructions for credential import
+	// The actual import happens via ImportKiroCredentials endpoint
+	c.JSON(200, gin.H{
+		"status":       "ok",
+		"state":        state,
+		"import_mode":  true,
+		"instructions": "Kiro uses browser-based OAuth through Kiro IDE. Please use the Import Credentials feature to paste your kiro-auth-token.json contents.",
+		"credential_locations": []string{
+			"Windows: %USERPROFILE%\\.kiro\\kiro-auth-token.json",
+			"macOS/Linux: ~/.kiro/kiro-auth-token.json",
+		},
+	})
+}
+
+// ImportKiroCredentials handles importing Kiro credentials from JSON.
+func (h *Handler) ImportKiroCredentials(c *gin.Context) {
+	ctx := context.Background()
+
+	var req struct {
+		Credentials string `json:"credentials"`
+		State       string `json:"state"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	credentials := strings.TrimSpace(req.Credentials)
+	if credentials == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "credentials are required"})
+		return
+	}
+
+	// Parse the credentials JSON
+	var creds struct {
+		AccessToken  string `json:"accessToken"`
+		RefreshToken string `json:"refreshToken"`
+		ClientID     string `json:"clientId"`
+		ClientSecret string `json:"clientSecret"`
+		ProfileArn   string `json:"profileArn"`
+		Region       string `json:"region"`
+		AuthMethod   string `json:"authMethod"`
+		ExpiresAt    string `json:"expiresAt"`
+	}
+
+	if err := json.Unmarshal([]byte(credentials), &creds); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to parse credentials JSON: " + err.Error()})
+		return
+	}
+
+	if creds.RefreshToken == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "refreshToken is required in credentials"})
+		return
+	}
+
+	region := creds.Region
+	if region == "" {
+		region = "us-east-1"
+	}
+
+	authMethod := creds.AuthMethod
+	if authMethod == "" {
+		authMethod = "social"
+	}
+
+	// Try to refresh the token to verify credentials work
+	httpClient := util.SetProxy(&h.cfg.SDKConfig, &http.Client{Timeout: 30 * time.Second})
+
+	var accessToken string
+	var expiresAt string
+	var newRefreshToken string
+
+	if strings.ToLower(authMethod) == "idc" || strings.ToLower(authMethod) == "builderid" {
+		if creds.ClientID == "" || creds.ClientSecret == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "clientId and clientSecret are required for IdC auth"})
+			return
+		}
+		tokenData, err := refreshKiroIdCToken(ctx, creds.RefreshToken, creds.ClientID, creds.ClientSecret, region, httpClient)
+		if err != nil {
+			log.Warnf("kiro: token refresh failed, using provided token: %v", err)
+			accessToken = creds.AccessToken
+			expiresAt = creds.ExpiresAt
+		} else {
+			accessToken = tokenData.AccessToken
+			expiresAt = tokenData.ExpiresAt
+			if tokenData.RefreshToken != "" {
+				newRefreshToken = tokenData.RefreshToken
+			}
+		}
+	} else {
+		tokenData, err := refreshKiroSocialToken(ctx, creds.RefreshToken, region, httpClient)
+		if err != nil {
+			log.Warnf("kiro: token refresh failed, using provided token: %v", err)
+			accessToken = creds.AccessToken
+			expiresAt = creds.ExpiresAt
+		} else {
+			accessToken = tokenData.AccessToken
+			expiresAt = tokenData.ExpiresAt
+		}
+	}
+
+	if accessToken == "" {
+		accessToken = creds.AccessToken
+	}
+	if expiresAt == "" {
+		expiresAt = time.Now().Add(1 * time.Hour).Format(time.RFC3339)
+	}
+
+	refreshToken := creds.RefreshToken
+	if newRefreshToken != "" {
+		refreshToken = newRefreshToken
+	}
+
+	// Generate a unique identifier
+	identifier := fmt.Sprintf("kiro-%d", time.Now().UnixMilli())
+	if creds.ProfileArn != "" {
+		parts := strings.Split(creds.ProfileArn, ":")
+		if len(parts) > 4 {
+			identifier = fmt.Sprintf("kiro-%s", parts[4])
+		}
+	}
+
+	now := time.Now()
+	metadata := map[string]any{
+		"type":          "kiro",
+		"access_token":  accessToken,
+		"refresh_token": refreshToken,
+		"auth_method":   authMethod,
+		"region":        region,
+		"timestamp":     now.UnixMilli(),
+		"expired":       expiresAt,
+	}
+
+	if creds.ClientID != "" {
+		metadata["client_id"] = creds.ClientID
+	}
+	if creds.ClientSecret != "" {
+		metadata["client_secret"] = creds.ClientSecret
+	}
+	if creds.ProfileArn != "" {
+		metadata["profile_arn"] = creds.ProfileArn
+	}
+
+	fileName := fmt.Sprintf("%s.json", identifier)
+	record := &coreauth.Auth{
+		ID:       fileName,
+		Provider: "kiro",
+		FileName: fileName,
+		Label:    identifier,
+		Metadata: metadata,
+	}
+
+	savedPath, errSave := h.saveTokenRecord(ctx, record)
+	if errSave != nil {
+		log.Errorf("Failed to save Kiro token to file: %v", errSave)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save credentials"})
+		return
+	}
+
+	if req.State != "" {
+		CompleteOAuthSession(req.State)
+	}
+	CompleteOAuthSessionsByProvider("kiro")
+
+	fmt.Printf("Kiro authentication successful! Token saved to %s\n", savedPath)
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "ok",
+		"message": "Kiro credentials imported successfully",
+		"path":    savedPath,
+	})
+}
+
+// refreshKiroSocialToken refreshes Kiro token using social auth.
+func refreshKiroSocialToken(ctx context.Context, refreshToken, region string, httpClient *http.Client) (*kiroTokenResponse, error) {
+	refreshURL := fmt.Sprintf("https://prod.%s.auth.desktop.kiro.dev/refreshToken", region)
+
+	reqBody := map[string]string{"refreshToken": refreshToken}
+	jsonBody, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, refreshURL, strings.NewReader(string(jsonBody)))
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "KiroIDE-1.0.0-cli-proxy-api")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("token refresh failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var tokenResp struct {
+		AccessToken string `json:"accessToken"`
+		ExpiresIn   int64  `json:"expiresIn"`
+	}
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		return nil, err
+	}
+
+	expiresIn := tokenResp.ExpiresIn
+	if expiresIn == 0 {
+		expiresIn = 3600
+	}
+
+	return &kiroTokenResponse{
+		AccessToken: tokenResp.AccessToken,
+		ExpiresAt:   time.Now().Add(time.Duration(expiresIn) * time.Second).Format(time.RFC3339),
+	}, nil
+}
+
+// refreshKiroIdCToken refreshes Kiro token using AWS IdC.
+func refreshKiroIdCToken(ctx context.Context, refreshToken, clientID, clientSecret, region string, httpClient *http.Client) (*kiroTokenResponse, error) {
+	tokenURL := fmt.Sprintf("https://oidc.%s.amazonaws.com/token", region)
+
+	data := url.Values{}
+	data.Set("grant_type", "refresh_token")
+	data.Set("client_id", clientID)
+	data.Set("client_secret", clientSecret)
+	data.Set("refresh_token", refreshToken)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(data.Encode()))
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "aws-sdk-js/3.738.0")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("token exchange failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var tokenResp struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		ExpiresIn    int64  `json:"expires_in"`
+	}
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		return nil, err
+	}
+
+	expiresIn := tokenResp.ExpiresIn
+	if expiresIn == 0 {
+		expiresIn = 3600
+	}
+
+	return &kiroTokenResponse{
+		AccessToken:  tokenResp.AccessToken,
+		RefreshToken: tokenResp.RefreshToken,
+		ExpiresAt:    time.Now().Add(time.Duration(expiresIn) * time.Second).Format(time.RFC3339),
+	}, nil
+}
+
+type kiroTokenResponse struct {
+	AccessToken  string
+	RefreshToken string
+	ExpiresAt    string
+}
+
 func (h *Handler) GetAuthStatus(c *gin.Context) {
 	state := strings.TrimSpace(c.Query("state"))
 	if state == "" {
@@ -2285,4 +2607,61 @@ func (h *Handler) GetAuthStatus(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "wait"})
+}
+
+// PatchAuthFile updates properties of an auth file (e.g., weight).
+// PATCH /auth-files?name=<filename>
+// Body: { "weight": 3 }
+func (h *Handler) PatchAuthFile(c *gin.Context) {
+	name := c.Query("name")
+	if name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		return
+	}
+
+	var req struct {
+		Weight *int `json:"weight"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	if h.authManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "auth manager not available"})
+		return
+	}
+
+	// Find the auth by filename or ID
+	auths := h.authManager.List()
+	var targetAuth *coreauth.Auth
+	for _, auth := range auths {
+		if auth.FileName == name || auth.ID == name {
+			targetAuth = auth
+			break
+		}
+	}
+
+	if targetAuth == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "auth file not found"})
+		return
+	}
+
+	// Update the weight
+	if req.Weight != nil {
+		targetAuth.Weight = *req.Weight
+	}
+
+	// Persist the update
+	ctx := c.Request.Context()
+	if _, err := h.authManager.Update(ctx, targetAuth); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update auth: %v", err)})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "ok",
+		"message": "auth file updated",
+		"weight":  targetAuth.Weight,
+	})
 }

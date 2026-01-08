@@ -174,6 +174,10 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 		if provided == "" {
 			provided = c.GetHeader("X-Management-Key")
 		}
+		// Support query parameter auth for SSE endpoints (EventSource API cannot send headers)
+		if provided == "" {
+			provided = c.Query("key")
+		}
 
 		if provided == "" {
 			if !localClient {

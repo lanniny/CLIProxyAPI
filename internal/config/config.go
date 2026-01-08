@@ -123,6 +123,10 @@ type RemoteManagement struct {
 	SecretKey string `yaml:"secret-key"`
 	// DisableControlPanel skips serving and syncing the bundled management UI when true.
 	DisableControlPanel bool `yaml:"disable-control-panel"`
+	// DisableAutoUpdate prevents automatic updates of the management panel asset.
+	// When true, the local management.html file will not be overwritten by remote updates.
+	// This is useful when you have made local modifications to the management panel.
+	DisableAutoUpdate bool `yaml:"disable-auto-update"`
 	// PanelGitHubRepository overrides the GitHub repository used to fetch the management panel asset.
 	// Accepts either a repository URL (https://github.com/org/repo) or an API releases endpoint.
 	PanelGitHubRepository string `yaml:"panel-github-repository"`
@@ -141,8 +145,23 @@ type QuotaExceeded struct {
 // RoutingConfig configures how credentials are selected for requests.
 type RoutingConfig struct {
 	// Strategy selects the credential selection strategy.
-	// Supported values: "round-robin" (default), "fill-first".
+	// Supported values: "round-robin" (default), "fill-first", "weighted-round-robin".
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
+
+	// HealthCheck enables optional background health checking for credentials.
+	HealthCheck *HealthCheckConfig `yaml:"health-check,omitempty" json:"health-check,omitempty"`
+}
+
+// HealthCheckConfig configures optional background health checking for credentials.
+type HealthCheckConfig struct {
+	// Enabled controls whether health checks are performed.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// Interval is the duration between health checks (default: 5m).
+	Interval string `yaml:"interval,omitempty" json:"interval,omitempty"`
+
+	// Timeout is the maximum duration for a single health check (default: 30s).
+	Timeout string `yaml:"timeout,omitempty" json:"timeout,omitempty"`
 }
 
 // ModelNameMapping defines a model ID rename mapping for a specific channel.
@@ -257,6 +276,10 @@ type ClaudeKey struct {
 
 	// ExcludedModels lists model IDs that should be excluded for this provider.
 	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+
+	// Weight controls load balancing priority for weighted-round-robin strategy.
+	// Higher weight = more traffic. 0 or negative treated as 1 (default).
+	Weight int `yaml:"weight,omitempty" json:"weight,omitempty"`
 }
 
 // ClaudeModel describes a mapping between an alias and the actual upstream model name.
@@ -295,6 +318,10 @@ type CodexKey struct {
 
 	// ExcludedModels lists model IDs that should be excluded for this provider.
 	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+
+	// Weight controls load balancing priority for weighted-round-robin strategy.
+	// Higher weight = more traffic. 0 or negative treated as 1 (default).
+	Weight int `yaml:"weight,omitempty" json:"weight,omitempty"`
 }
 
 // CodexModel describes a mapping between an alias and the actual upstream model name.
@@ -332,6 +359,10 @@ type GeminiKey struct {
 
 	// ExcludedModels lists model IDs that should be excluded for this provider.
 	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+
+	// Weight controls load balancing priority for weighted-round-robin strategy.
+	// Higher weight = more traffic. 0 or negative treated as 1 (default).
+	Weight int `yaml:"weight,omitempty" json:"weight,omitempty"`
 }
 
 // GeminiModel describes a mapping between an alias and the actual upstream model name.
@@ -375,6 +406,10 @@ type OpenAICompatibilityAPIKey struct {
 
 	// ProxyURL overrides the global proxy setting for this API key if provided.
 	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+
+	// Weight controls load balancing priority for weighted-round-robin strategy.
+	// Higher weight = more traffic. 0 or negative treated as 1 (default).
+	Weight int `yaml:"weight,omitempty" json:"weight,omitempty"`
 }
 
 // OpenAICompatibilityModel represents a model configuration for OpenAI compatibility,

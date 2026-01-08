@@ -12,6 +12,7 @@ import (
 	"time"
 
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	log "github.com/sirupsen/logrus"
 )
 
 // FileTokenStore persists token records and auth metadata using the filesystem as backing storage.
@@ -107,11 +108,17 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 func (s *FileTokenStore) List(ctx context.Context) ([]*cliproxyauth.Auth, error) {
 	dir := s.baseDirSnapshot()
 	if dir == "" {
+		log.Warn("auth filestore: List() called but directory not configured")
 		return nil, fmt.Errorf("auth filestore: directory not configured")
 	}
+	log.Debugf("auth filestore: scanning directory for auth files: %s", dir)
+
 	entries := make([]*cliproxyauth.Auth, 0)
+	jsonFilesFound := 0
+
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
+			log.Warnf("auth filestore: walk error at path %s: %v", path, walkErr)
 			return walkErr
 		}
 		if d.IsDir() {
@@ -120,18 +127,26 @@ func (s *FileTokenStore) List(ctx context.Context) ([]*cliproxyauth.Auth, error)
 		if !strings.HasSuffix(strings.ToLower(d.Name()), ".json") {
 			return nil
 		}
+		jsonFilesFound++
+		log.Debugf("auth filestore: discovered JSON file: %s", path)
+
 		auth, err := s.readAuthFile(path, dir)
 		if err != nil {
+			log.Warnf("auth filestore: failed to read auth file %s: %v (continuing scan)", path, err)
 			return nil
 		}
 		if auth != nil {
+			log.Debugf("auth filestore: successfully loaded auth id=%s provider=%s from %s", auth.ID, auth.Provider, path)
 			entries = append(entries, auth)
 		}
 		return nil
 	})
 	if err != nil {
+		log.Errorf("auth filestore: directory walk failed: %v", err)
 		return nil, err
 	}
+
+	log.Infof("auth filestore: scan complete - found %d JSON files, loaded %d auth entries from %s", jsonFilesFound, len(entries), dir)
 	return entries, nil
 }
 
@@ -263,6 +278,11 @@ func (s *FileTokenStore) labelFor(metadata map[string]any) string {
 func (s *FileTokenStore) baseDirSnapshot() string {
 	s.dirLock.RLock()
 	defer s.dirLock.RUnlock()
+	if s.baseDir != "" {
+		log.Debugf("auth filestore: baseDirSnapshot returning configured directory: %s", s.baseDir)
+	} else {
+		log.Debug("auth filestore: baseDirSnapshot returning empty (directory not configured)")
+	}
 	return s.baseDir
 }
 

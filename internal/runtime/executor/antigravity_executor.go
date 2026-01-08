@@ -898,6 +898,32 @@ func FetchAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *c
 					}
 				}
 				models = append(models, modelInfo)
+
+				// Register additional aliases for Claude opus model
+				if aliasName == "gemini-claude-opus-4-5-thinking" {
+					for _, extraAlias := range []string{"claude-opus-4-5-20251101", "claude-opus-4-5"} {
+						extraModel := &registry.ModelInfo{
+							ID:          extraAlias,
+							Name:        modelName,
+							Description: extraAlias,
+							DisplayName: extraAlias,
+							Version:     extraAlias,
+							Object:      "model",
+							Created:     now,
+							OwnedBy:     antigravityAuthType,
+							Type:        antigravityAuthType,
+						}
+						if cfg != nil {
+							if cfg.Thinking != nil {
+								extraModel.Thinking = cfg.Thinking
+							}
+							if cfg.MaxCompletionTokens > 0 {
+								extraModel.MaxCompletionTokens = cfg.MaxCompletionTokens
+							}
+						}
+						models = append(models, extraModel)
+					}
+				}
 			}
 		}
 		return models
@@ -1296,7 +1322,7 @@ func modelName2Alias(modelName string) string {
 		return "gemini-claude-sonnet-4-5"
 	case "claude-sonnet-4-5-thinking":
 		return "gemini-claude-sonnet-4-5-thinking"
-	case "claude-opus-4-5-thinking":
+	case "claude-opus-4-5-thinking", "claude-opus-4-5", "claude-opus-4-5-20251101":
 		return "gemini-claude-opus-4-5-thinking"
 	case "chat_20706", "chat_23310", "gemini-2.5-flash-thinking", "gemini-3-pro-low", "gemini-2.5-pro":
 		return ""
@@ -1319,7 +1345,7 @@ func alias2ModelName(modelName string) string {
 		return "claude-sonnet-4-5"
 	case "gemini-claude-sonnet-4-5-thinking":
 		return "claude-sonnet-4-5-thinking"
-	case "gemini-claude-opus-4-5-thinking":
+	case "gemini-claude-opus-4-5-thinking", "claude-opus-4-5", "claude-opus-4-5-20251101":
 		return "claude-opus-4-5-thinking"
 	default:
 		return modelName

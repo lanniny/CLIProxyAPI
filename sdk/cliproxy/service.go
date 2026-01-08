@@ -86,6 +86,9 @@ type Service struct {
 
 	// wsGateway manages websocket Gemini providers.
 	wsGateway *wsrelay.Manager
+
+	// healthChecker performs periodic health checks on credentials when enabled.
+	healthChecker *coreauth.HealthChecker
 }
 
 // RegisterUsagePlugin registers a usage plugin on the global usage manager.
@@ -379,6 +382,8 @@ func (s *Service) ensureExecutorsForAuth(a *coreauth.Auth) {
 		s.coreManager.RegisterExecutor(executor.NewQwenExecutor(s.cfg))
 	case "iflow":
 		s.coreManager.RegisterExecutor(executor.NewIFlowExecutor(s.cfg))
+	case "kiro":
+		s.coreManager.RegisterExecutor(executor.NewKiroExecutor(s.cfg))
 	default:
 		providerKey := strings.ToLower(strings.TrimSpace(a.Provider))
 		if providerKey == "" {
@@ -432,6 +437,16 @@ func (s *Service) Run(ctx context.Context) error {
 
 	s.applyRetryConfig(s.cfg)
 
+	// Ensure token store base directory is set before loading auth data.
+	// This follows the same pattern as builder.go to ensure the token store
+	// knows where to find auth files.
+	if tokenStore := sdkAuth.GetTokenStore(); tokenStore != nil {
+		if dirSetter, ok := tokenStore.(interface{ SetBaseDir(string) }); ok && s.cfg != nil {
+			dirSetter.SetBaseDir(s.cfg.AuthDir)
+			log.Infof("token store base directory set to: %s", s.cfg.AuthDir)
+		}
+	}
+
 	if s.coreManager != nil {
 		if errLoad := s.coreManager.Load(ctx); errLoad != nil {
 			log.Warnf("failed to load auth store: %v", errLoad)
@@ -457,7 +472,9 @@ func (s *Service) Run(ctx context.Context) error {
 	// legacy clients removed; no caches to refresh
 
 	// handlers no longer depend on legacy clients; pass nil slice initially
+	fmt.Printf("DEBUG: About to call NewServer with cfg=%v, coreManager=%v, accessManager=%v\n", s.cfg != nil, s.coreManager != nil, s.accessManager != nil)
 	s.server = api.NewServer(s.cfg, s.coreManager, s.accessManager, s.configPath, s.serverOptions...)
+	fmt.Printf("DEBUG: NewServer returned server=%v\n", s.server != nil)
 
 	if s.authManager == nil {
 		s.authManager = newDefaultAuthManager()
@@ -583,6 +600,28 @@ func (s *Service) Run(ctx context.Context) error {
 		log.Infof("core auth auto-refresh started (interval=%s)", interval)
 	}
 
+	// Start health checker (enabled by default, can be disabled via config).
+	if s.coreManager != nil && s.cfg != nil {
+		// Health check is enabled by default unless explicitly disabled
+		healthCheckEnabled := true
+		var healthCheckInterval, healthCheckTimeout string
+		if s.cfg.Routing.HealthCheck != nil {
+			healthCheckEnabled = s.cfg.Routing.HealthCheck.Enabled
+			healthCheckInterval = s.cfg.Routing.HealthCheck.Interval
+			healthCheckTimeout = s.cfg.Routing.HealthCheck.Timeout
+		}
+		if healthCheckEnabled {
+			healthCfg := coreauth.ParseHealthCheckConfig(
+				healthCheckEnabled,
+				healthCheckInterval,
+				healthCheckTimeout,
+			)
+			s.healthChecker = coreauth.NewHealthChecker(s.coreManager, healthCfg)
+			s.healthChecker.Start(ctx)
+			log.Infof("health checker started (interval=%s, timeout=%s)", healthCfg.Interval, healthCfg.Timeout)
+		}
+	}
+
 	select {
 	case <-ctx.Done():
 		log.Debug("service context cancelled, shutting down...")
@@ -618,6 +657,9 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		}
 		if s.coreManager != nil {
 			s.coreManager.StopAutoRefresh()
+		}
+		if s.healthChecker != nil {
+			s.healthChecker.Stop()
 		}
 		if s.watcher != nil {
 			if err := s.watcher.Stop(); err != nil {
@@ -765,6 +807,9 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 		models = applyExcludedModels(models, excluded)
 	case "iflow":
 		models = registry.GetIFlowModels()
+		models = applyExcludedModels(models, excluded)
+	case "kiro":
+		models = registry.GetKiroModels()
 		models = applyExcludedModels(models, excluded)
 	default:
 		// Handle OpenAI-compatibility providers by name using config

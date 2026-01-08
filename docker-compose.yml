@@ -22,14 +22,14 @@ services:
     environment:
       DEPLOY: ${DEPLOY:-}
     ports:
-      - "8317:8318"  # 外部8317映射到容器内8318
+      - "8317:8317"  # 统一使用8317端口
       - "8085:8085"
       - "1455:1455"
       - "54545:54545"
       - "51121:51121"
       - "11451:11451"
     volumes:
-      - ./config.yaml:/CLIProxyAPI/config.yaml
+      - ./config.docker.yaml:/CLIProxyAPI/config.yaml  # Docker使用专用配置（Linux路径）
       - ./auths:/root/.cli-proxy-api
       - ./logs:/CLIProxyAPI/logs
     restart: unless-stopped

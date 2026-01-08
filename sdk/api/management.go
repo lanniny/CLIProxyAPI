@@ -50,6 +50,14 @@ func (m *managementTokenRequester) RequestAntigravityToken(c *gin.Context) {
 	m.handler.RequestAntigravityToken(c)
 }
 
+func (m *managementTokenRequester) RequestKiroToken(c *gin.Context) {
+	m.handler.RequestKiroToken(c)
+}
+
+func (m *managementTokenRequester) ImportKiroCredentials(c *gin.Context) {
+	m.handler.ImportKiroCredentials(c)
+}
+
 func (m *managementTokenRequester) RequestQwenToken(c *gin.Context) {
 	m.handler.RequestQwenToken(c)
 }

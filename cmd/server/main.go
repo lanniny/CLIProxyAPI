@@ -62,6 +62,7 @@ func main() {
 	var iflowCookie bool
 	var noBrowser bool
 	var antigravityLogin bool
+	var kiroLogin bool
 	var projectID string
 	var vertexImport string
 	var configPath string
@@ -76,6 +77,7 @@ func main() {
 	flag.BoolVar(&iflowCookie, "iflow-cookie", false, "Login to iFlow using Cookie")
 	flag.BoolVar(&noBrowser, "no-browser", false, "Don't open browser automatically for OAuth")
 	flag.BoolVar(&antigravityLogin, "antigravity-login", false, "Login to Antigravity using OAuth")
+	flag.BoolVar(&kiroLogin, "kiro-login", false, "Login to Kiro (import credentials)")
 	flag.StringVar(&projectID, "project_id", "", "Project ID (Gemini only, not required)")
 	flag.StringVar(&configPath, "config", DefaultConfigPath, "Configure File Path")
 	flag.StringVar(&vertexImport, "vertex-import", "", "Import Vertex service account key JSON file")
@@ -453,6 +455,9 @@ func main() {
 	} else if antigravityLogin {
 		// Handle Antigravity login
 		cmd.DoAntigravityLogin(cfg, options)
+	} else if kiroLogin {
+		// Handle Kiro login
+		cmd.DoKiroLogin(cfg, options)
 	} else if codexLogin {
 		// Handle Codex login
 		cmd.DoCodexLogin(cfg, options)
